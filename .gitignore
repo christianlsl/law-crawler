@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# Virtual environments
+.venv/
+venv/
+
+# Local crawler outputs
+output/
+output_*/
+crawl_output_*/
+logs/
+
+# Downloaded data
+*.xlsx
+*.csv
+*.jsonl
+*.doc
+*.docx
+*.pdf
+
+# Keep source-controlled docs and dependency files
+!README.md
+!requirements.txt
+!*.py
+!LICENSE
