@@ -90,6 +90,25 @@ def decode_filename_from_url(url: str) -> str | None:
     return sanitize_filename(filename)
 
 
+def redact_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def format_request_exception(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    url = getattr(response, "url", "")
+    status_code = getattr(response, "status_code", None)
+    if url:
+        redacted = redact_url(url)
+        if status_code is not None:
+            return f"{exc.__class__.__name__}: status={status_code} url={redacted}"
+        return f"{exc.__class__.__name__}: url={redacted}"
+    return str(exc)
+
+
 def write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -474,8 +493,20 @@ class NpcCrawler(BaseCrawler):
                     filename = decode_filename_from_url(url) or sanitize_filename(
                         f"{record['title']}_{record['bbbs']}.docx"
                     )
-                    saved_path = self.download_npc_file(url, files_dir / filename)
-                    record["downloaded_file"] = str(saved_path.relative_to(category_root))
+                    try:
+                        saved_path = self.download_npc_file(url, files_dir / filename)
+                        record["downloaded_file"] = str(saved_path.relative_to(category_root))
+                    except requests.RequestException as exc:
+                        redacted_url = redact_url(url)
+                        record["download_error"] = format_request_exception(exc)
+                        self.logger.warning(
+                            "NPC: %s 下载失败 bbbs=%s title=%s url=%s error=%s",
+                            category_name,
+                            record.get("bbbs", ""),
+                            record.get("title", ""),
+                            redacted_url,
+                            record["download_error"],
+                        )
 
         write_jsonl(category_root / "metadata.jsonl", records)
         write_csv(category_root / "metadata.csv", records)
