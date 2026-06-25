@@ -23,6 +23,7 @@ logs/
 *.doc
 *.docx
 *.pdf
+*.zip
 
 # Keep source-controlled docs and dependency files
 !README.md

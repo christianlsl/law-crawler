@@ -52,9 +52,18 @@ class CrawlOptions:
     timeout: int
 
 
-def sanitize_filename(name: str, fallback: str = "unnamed") -> str:
+def sanitize_filename(name: str, fallback: str = "unnamed", max_bytes: int = 240) -> str:
     name = SAFE_CHAR_RE.sub("_", name).strip().rstrip(".")
-    return name or fallback
+    if not name:
+        return fallback
+    # Truncate if the name exceeds the filesystem byte limit (255 on most
+    # Linux filesystems).  We leave room for a suffix like "__99".
+    encoded = name.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return name
+    # Binary-search or simple trim preserving valid UTF-8
+    trimmed = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return trimmed.rstrip("_. ") or fallback
 
 
 def ensure_dir(path: Path) -> Path:
@@ -146,9 +155,16 @@ def unique_path(path: Path) -> Path:
         return path
     stem = path.stem
     suffix = path.suffix
+    # Leave room for the longest possible suffix (__999999)
+    max_stem_bytes = 255 - len(suffix.encode("utf-8")) - len("__999999".encode("utf-8"))
     index = 2
     while True:
-        candidate = path.with_name(f"{stem}__{index}{suffix}")
+        candidate_name = f"{stem}__{index}{suffix}"
+        if len(candidate_name.encode("utf-8")) > 255:
+            # Trim stem so the full name fits within 255 bytes
+            trimmed_stem = stem.encode("utf-8")[:max_stem_bytes].decode("utf-8", errors="ignore").rstrip("_. ")
+            candidate_name = f"{trimmed_stem}__{index}{suffix}"
+        candidate = path.with_name(candidate_name)
         if not candidate.exists():
             return candidate
         index += 1
@@ -943,23 +959,43 @@ class GovRulesCrawler(BaseCrawler):
                     "downloaded_text": "",
                     "downloaded_html": "",
                     "attachment_files": [],
+                    "download_error": "",
                 }
                 if self.options.download_files and detail_url:
                     record_dir = ensure_dir(files_root / sanitize_filename(title, "rule"))
-                    detail = self.parse_detail_page(detail_url)
-                    html_path = record_dir / "page.html"
-                    txt_path = record_dir / "page.txt"
-                    html_path.write_text(detail["html"], encoding="utf-8")
-                    txt_path.write_text(detail["text"], encoding="utf-8")
-                    record["downloaded_html"] = str(html_path.relative_to(category_root))
-                    record["downloaded_text"] = str(txt_path.relative_to(category_root))
-                    attachment_files = []
-                    for attachment in detail["attachments"]:
-                        ext = Path(urlparse(attachment["url"]).path).suffix or ""
-                        filename = sanitize_filename(attachment["title"], "attachment")
-                        saved_path = self.download_file(attachment["url"], record_dir / f"{filename}{ext}")
-                        attachment_files.append(str(saved_path.relative_to(category_root)))
-                    record["attachment_files"] = attachment_files
+                    try:
+                        detail = self.parse_detail_page(detail_url)
+                    except requests.RequestException as exc:
+                        record["download_error"] = format_request_exception(exc)
+                        self.logger.warning(
+                            "Gov rules: %s 详情页抓取失败 title=%s error=%s",
+                            category_name,
+                            title,
+                            record["download_error"],
+                        )
+                    else:
+                        html_path = record_dir / "page.html"
+                        txt_path = record_dir / "page.txt"
+                        html_path.write_text(detail["html"], encoding="utf-8")
+                        txt_path.write_text(detail["text"], encoding="utf-8")
+                        record["downloaded_html"] = str(html_path.relative_to(category_root))
+                        record["downloaded_text"] = str(txt_path.relative_to(category_root))
+                        attachment_files = []
+                        for attachment in detail["attachments"]:
+                            ext = Path(urlparse(attachment["url"]).path).suffix or ""
+                            filename = sanitize_filename(attachment["title"], "attachment")
+                            try:
+                                saved_path = self.download_file(attachment["url"], record_dir / f"{filename}{ext}")
+                                attachment_files.append(str(saved_path.relative_to(category_root)))
+                            except requests.RequestException as exc:
+                                self.logger.warning(
+                                    "Gov rules: %s 附件下载失败 title=%s url=%s error=%s",
+                                    category_name,
+                                    title,
+                                    redact_url(attachment["url"]),
+                                    format_request_exception(exc),
+                                )
+                        record["attachment_files"] = attachment_files
                 records.append(record)
                 if self.limit_reached(records):
                     break
